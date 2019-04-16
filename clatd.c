@@ -231,7 +231,7 @@ void drop_root_but_keep_caps() {
  *   mark - the socket mark to use for the sending raw socket
  */
 void open_sockets(struct tun_data *tunnel, uint32_t mark) {
-  int rawsock = socket(AF_INET6, SOCK_RAW | SOCK_NONBLOCK, IPPROTO_RAW);
+  int rawsock = socket(AF_INET6, SOCK_RAW | SOCK_NONBLOCK | SOCK_CLOEXEC, IPPROTO_RAW);
   if (rawsock < 0) {
     logmsg(ANDROID_LOG_FATAL, "raw socket failed: %s", strerror(errno));
     exit(1);
@@ -381,7 +381,7 @@ void configure_interface(const char *uplink_interface, const char *plat_prefix, 
     logmsg(ANDROID_LOG_WARN, "ipv4mtu now set to = %d", Global_Clatd_Config.ipv4mtu);
   }
 
-  error = tun_alloc(tunnel->device4, tunnel->fd4);
+  error = tun_alloc(tunnel->device4, tunnel->fd4, sizeof(tunnel->device4));
   if (error < 0) {
     logmsg(ANDROID_LOG_FATAL, "tun_alloc/4 failed: %s", strerror(errno));
     exit(1);
@@ -430,6 +430,11 @@ void read_packet(int read_fd, int write_fd, int to_ipv6) {
   }
 
   uint16_t proto = ntohs(tun_header->proto);
+  if (proto == ETH_P_IPV6) {
+    // kernel IPv6 stack spams us with router/neighbour solication,
+    // multicast group joins, etc. which otherwise fills the log...
+    return;
+  }
   if (proto != ETH_P_IP) {
     logmsg(ANDROID_LOG_WARN, "%s: unknown packet type = 0x%x", __func__, proto);
     return;
