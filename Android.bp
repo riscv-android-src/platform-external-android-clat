@@ -35,7 +35,6 @@ filegroup {
         "netlink_msg.c",
         "ring.c",
         "setif.c",
-        "tun.c",
         "translate.c",
     ],
 }
@@ -53,6 +52,20 @@ cc_binary {
         "libcutils",
         "liblog",
         "libnetutils",
+    ],
+
+    // Only enable clang-tidy for the daemon, not the tests, because enabling it for the
+    // tests substantially increases build/compile cycle times and doesn't really provide a
+    // security benefit.
+    tidy: true,
+    tidy_checks: [
+        "-*",
+        "cert-*",
+        "clang-analyzer-security*",
+        "android-*",
+    ],
+    tidy_flags: [
+        "-warnings-as-errors=clang-analyzer-security*,cert-*,android-*",
     ],
 }
 
