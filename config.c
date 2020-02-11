@@ -150,16 +150,6 @@ struct in6_addr *config_item_ip6(cnode *root, const char *item_name, const char 
   return ret_val_ptr;
 }
 
-/* function: free_config
- * frees the memory used by the global config variable
- */
-void free_config() {
-  if (Global_Clatd_Config.plat_from_dns64_hostname) {
-    free(Global_Clatd_Config.plat_from_dns64_hostname);
-    Global_Clatd_Config.plat_from_dns64_hostname = NULL;
-  }
-}
-
 /* function: ipv6_prefix_equal
  * compares the prefixes two ipv6 addresses. assumes the prefix lengths are both /64.
  *   a1 - first address
@@ -180,7 +170,7 @@ void dns64_detection(unsigned net_id) {
   backoff_sleep = 1;
 
   while (1) {
-    status = plat_prefix(Global_Clatd_Config.plat_from_dns64_hostname, net_id, &tmp_ptr);
+    status = plat_prefix(DNS64_DETECTION_HOSTNAME, net_id, &tmp_ptr);
     if (status > 0) {
       memcpy(&Global_Clatd_Config.plat_subnet, &tmp_ptr, sizeof(struct in6_addr));
       return;
@@ -234,7 +224,7 @@ int connect_is_ipv4_address_free(in_addr_t addr) {
 
   // Attempt to connect to the address. If the connection succeeds and getsockname returns the same
   // the address then the address is already assigned to the system and we can't use it.
-  struct sockaddr_in sin = { .sin_family = AF_INET, .sin_addr = { addr }, .sin_port = 53 };
+  struct sockaddr_in sin = { .sin_family = AF_INET, .sin_addr = { addr }, .sin_port = htons(53) };
   socklen_t len          = sizeof(sin);
   int inuse              = connect(s, (struct sockaddr *)&sin, sizeof(sin)) == 0 &&
               getsockname(s, (struct sockaddr *)&sin, &len) == 0 && (size_t)len >= sizeof(sin) &&
@@ -328,10 +318,6 @@ int read_config(const char *file, const char *uplink_interface, const char *plat
   Global_Clatd_Config.default_pdp_interface = strdup(uplink_interface);
   if (!Global_Clatd_Config.default_pdp_interface) goto failed;
 
-  if (!config_item_int16_t(root, "mtu", "-1", &Global_Clatd_Config.mtu)) goto failed;
-
-  if (!config_item_int16_t(root, "ipv4mtu", "-1", &Global_Clatd_Config.ipv4mtu)) goto failed;
-
   if (!config_item_ip(root, "ipv4_local_subnet", DEFAULT_IPV4_LOCAL_SUBNET,
                       &Global_Clatd_Config.ipv4_local_subnet))
     goto failed;
@@ -357,9 +343,6 @@ int read_config(const char *file, const char *uplink_interface, const char *plat
     } else {
       free(tmp_ptr);
 
-      if (!(Global_Clatd_Config.plat_from_dns64_hostname =
-              config_item_str(root, "plat_from_dns64_hostname", DEFAULT_DNS64_DETECTION_HOSTNAME)))
-        goto failed;
       dns64_detection(net_id);
     }
   }
@@ -381,7 +364,6 @@ int read_config(const char *file, const char *uplink_interface, const char *plat
 
 failed:
   free(root);
-  free_config();
   return 0;
 }
 
@@ -391,8 +373,6 @@ failed:
 void dump_config() {
   char charbuffer[INET6_ADDRSTRLEN];
 
-  logmsg(ANDROID_LOG_DEBUG, "mtu = %d", Global_Clatd_Config.mtu);
-  logmsg(ANDROID_LOG_DEBUG, "ipv4mtu = %d", Global_Clatd_Config.ipv4mtu);
   logmsg(
     ANDROID_LOG_DEBUG, "ipv6_local_subnet = %s",
     inet_ntop(AF_INET6, &Global_Clatd_Config.ipv6_local_subnet, charbuffer, sizeof(charbuffer)));

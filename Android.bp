@@ -30,7 +30,6 @@ filegroup {
         "ipv4.c",
         "ipv6.c",
         "logging.c",
-        "mtu.c",
         "netlink_callbacks.c",
         "netlink_msg.c",
         "ring.c",
@@ -95,17 +94,4 @@ cc_test {
     ],
     test_suites: ["device-tests"],
     require_root: true,
-}
-
-// Microbenchmark.
-cc_test {
-    name: "clatd_microbenchmark",
-    defaults: ["clatd_defaults"],
-    srcs: [
-        "clatd_microbenchmark.c",
-        "tun.c",
-    ],
-    shared_libs: [
-        "libnetutils",
-    ],
 }
