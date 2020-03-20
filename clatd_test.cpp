@@ -772,12 +772,16 @@ TEST_F(ClatdTest, SelectIPv4Address) {
   EXPECT_EQ(inet_addr("127.0.0.2"), config_select_ipv4_address(&addr, 29));
 }
 
+TEST_F(ClatdTest, DetectMtu) {
+  // ::1 with bottom 32 bits set to 1 is still ::1 which routes via lo with mtu of 64KiB
+  ASSERT_EQ(detect_mtu(&in6addr_loopback, htonl(1), 0 /*MARK_UNSET*/), 65536);
+}
+
 TEST_F(ClatdTest, ConfigureTunIp) {
   addr_free_func orig_config_is_ipv4_address_free = config_is_ipv4_address_free;
   config_is_ipv4_address_free                     = over6_free;
 
   Global_Clatd_Config.ipv4_local_prefixlen = 29;
-  Global_Clatd_Config.ipv4mtu              = 1472;
 
   // Create an interface for configure_tun_ip to configure and bring up.
   TunInterface v4Iface;
@@ -785,7 +789,7 @@ TEST_F(ClatdTest, ConfigureTunIp) {
   struct tun_data tunnel = makeTunData();
   strlcpy(tunnel.device4, v4Iface.name().c_str(), sizeof(tunnel.device4));
 
-  configure_tun_ip(&tunnel, nullptr /* v4_addr */);
+  configure_tun_ip(&tunnel, nullptr /* v4_addr */, 1472);
   EXPECT_EQ(inet_addr("192.0.0.6"), Global_Clatd_Config.ipv4_local_subnet.s_addr);
 
   union anyip *ip = getinterface_ip(v4Iface.name().c_str(), AF_INET);
@@ -801,7 +805,6 @@ TEST_F(ClatdTest, ConfigureTunIpManual) {
   config_is_ipv4_address_free                     = over6_free;
 
   Global_Clatd_Config.ipv4_local_prefixlen = 29;
-  Global_Clatd_Config.ipv4mtu              = 1472;
 
   // Create an interface for configure_tun_ip to configure and bring up.
   TunInterface v4Iface;
@@ -809,7 +812,7 @@ TEST_F(ClatdTest, ConfigureTunIpManual) {
   struct tun_data tunnel = makeTunData();
   strlcpy(tunnel.device4, v4Iface.name().c_str(), sizeof(tunnel.device4));
 
-  configure_tun_ip(&tunnel, "192.0.2.1" /* v4_addr */);
+  configure_tun_ip(&tunnel, "192.0.2.1" /* v4_addr */, 1472);
   EXPECT_EQ(inet_addr("192.0.2.1"), Global_Clatd_Config.ipv4_local_subnet.s_addr);
 
   union anyip *ip = getinterface_ip(v4Iface.name().c_str(), AF_INET);
@@ -1042,26 +1045,6 @@ void expectSocketBound(int ifindex, int sock) {
 }
 
 TEST_F(ClatdTest, ConfigureIpv6Address) {
-  struct tun_data tunnel = makeTunData();
-
-  // Run configure_clat_ipv6_address.
-  ASSERT_TRUE(IN6_IS_ADDR_UNSPECIFIED(&Global_Clatd_Config.ipv6_local_subnet));
-  ASSERT_EQ(1, configure_clat_ipv6_address(&tunnel, sTun.name().c_str(), nullptr /* v6_addr */));
-
-  // Check that it generated an IID in the same prefix as the address assigned to the interface,
-  // and that the IID is not the default IID.
-  in6_addr addr = sTun.srcAddr();
-  EXPECT_TRUE(ipv6_prefix_equal(&Global_Clatd_Config.ipv6_local_subnet, &addr));
-  EXPECT_FALSE(IN6_ARE_ADDR_EQUAL(&Global_Clatd_Config.ipv6_local_subnet, &addr));
-  EXPECT_NE(htonl((uint32_t)0x00000464), Global_Clatd_Config.ipv6_local_subnet.s6_addr32[3]);
-  EXPECT_NE((uint32_t)0, Global_Clatd_Config.ipv6_local_subnet.s6_addr32[3]);
-
-  expectSocketBound(sTun.ifindex(), tunnel.read_fd6);
-
-  freeTunData(&tunnel);
-}
-
-TEST_F(ClatdTest, ConfigureIpv6AddressCommandLine) {
   struct tun_data tunnel = makeTunData();
 
   ASSERT_TRUE(IN6_IS_ADDR_UNSPECIFIED(&Global_Clatd_Config.ipv6_local_subnet));
