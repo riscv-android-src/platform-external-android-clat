@@ -30,7 +30,6 @@
 
 #include "clatd.h"
 #include "config.h"
-#include "dns64.h"
 #include "getaddr.h"
 #include "logging.h"
 
@@ -158,148 +157,14 @@ struct in6_addr *config_item_ip6(cnode *root, const char *item_name, const char 
  */
 int ipv6_prefix_equal(struct in6_addr *a1, struct in6_addr *a2) { return !memcmp(a1, a2, 8); }
 
-/* function: dns64_detection
- * does dns lookups to set the plat subnet or exits on failure, waits forever for a dns response
- * with a query backoff timer
- *   net_id - (optional) netId to use, NETID_UNSET indicates use of default network
- */
-void dns64_detection(unsigned net_id) {
-  int backoff_sleep, status;
-  struct in6_addr tmp_ptr;
-
-  backoff_sleep = 1;
-
-  while (1) {
-    status = plat_prefix(DNS64_DETECTION_HOSTNAME, net_id, &tmp_ptr);
-    if (status > 0) {
-      memcpy(&Global_Clatd_Config.plat_subnet, &tmp_ptr, sizeof(struct in6_addr));
-      return;
-    }
-    logmsg(ANDROID_LOG_WARN, "dns64_detection -- error, sleeping for %d seconds", backoff_sleep);
-    sleep(backoff_sleep);
-    backoff_sleep *= 2;
-    if (backoff_sleep >= 1800) {
-      // Scale down to one DNS query per half hour. Unnecessary DNS queries waste power, and the
-      // benefit is minimal (basically, only limited to the case where a network goes from IPv6-only
-      // to IPv6 with NAT64).
-      backoff_sleep = 1800;
-    }
-  }
-}
-
-/* function: gen_random_iid
- * picks a random interface ID that is checksum neutral with the IPv4 address and the NAT64 prefix
- *   myaddr            - IPv6 address to write to
- *   ipv4_local_subnet - clat IPv4 address
- *   plat_subnet       - NAT64 prefix
- */
-void gen_random_iid(struct in6_addr *myaddr, struct in_addr *ipv4_local_subnet,
-                    struct in6_addr *plat_subnet) {
-  // Fill last 8 bytes of IPv6 address with random bits.
-  arc4random_buf(&myaddr->s6_addr[8], 8);
-
-  // Make the IID checksum-neutral. That is, make it so that:
-  //   checksum(Local IPv4 | Remote IPv4) = checksum(Local IPv6 | Remote IPv6)
-  // in other words (because remote IPv6 = NAT64 prefix | Remote IPv4):
-  //   checksum(Local IPv4) = checksum(Local IPv6 | NAT64 prefix)
-  // Do this by adjusting the two bytes in the middle of the IID.
-
-  uint16_t middlebytes = (myaddr->s6_addr[11] << 8) + myaddr->s6_addr[12];
-
-  uint32_t c1 = ip_checksum_add(0, ipv4_local_subnet, sizeof(*ipv4_local_subnet));
-  uint32_t c2 = ip_checksum_add(0, plat_subnet, sizeof(*plat_subnet)) +
-                ip_checksum_add(0, myaddr, sizeof(*myaddr));
-
-  uint16_t delta      = ip_checksum_adjust(middlebytes, c1, c2);
-  myaddr->s6_addr[11] = delta >> 8;
-  myaddr->s6_addr[12] = delta & 0xff;
-}
-
-// Factored out to a separate function for testability.
-int connect_is_ipv4_address_free(in_addr_t addr) {
-  int s = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
-  if (s == -1) {
-    return 0;
-  }
-
-  // Attempt to connect to the address. If the connection succeeds and getsockname returns the same
-  // the address then the address is already assigned to the system and we can't use it.
-  struct sockaddr_in sin = { .sin_family = AF_INET, .sin_addr = { addr }, .sin_port = htons(53) };
-  socklen_t len          = sizeof(sin);
-  int inuse              = connect(s, (struct sockaddr *)&sin, sizeof(sin)) == 0 &&
-              getsockname(s, (struct sockaddr *)&sin, &len) == 0 && (size_t)len >= sizeof(sin) &&
-              sin.sin_addr.s_addr == addr;
-
-  close(s);
-  return !inuse;
-}
-
-addr_free_func config_is_ipv4_address_free = connect_is_ipv4_address_free;
-
-/* function: config_select_ipv4_address
- * picks a free IPv4 address, starting from ip and trying all addresses in the prefix in order
- *   ip        - the IP address from the configuration file
- *   prefixlen - the length of the prefix from which addresses may be selected.
- *   returns: the IPv4 address, or INADDR_NONE if no addresses were available
- */
-in_addr_t config_select_ipv4_address(const struct in_addr *ip, int16_t prefixlen) {
-  in_addr_t chosen = INADDR_NONE;
-
-  // Don't accept prefixes that are too large because we scan addresses one by one.
-  if (prefixlen < 16 || prefixlen > 32) {
-    return chosen;
-  }
-
-  // All these are in host byte order.
-  in_addr_t mask       = 0xffffffff >> (32 - prefixlen) << (32 - prefixlen);
-  in_addr_t ipv4       = ntohl(ip->s_addr);
-  in_addr_t first_ipv4 = ipv4;
-  in_addr_t prefix     = ipv4 & mask;
-
-  // Pick the first IPv4 address in the pool, wrapping around if necessary.
-  // So, for example, 192.0.0.4 -> 192.0.0.5 -> 192.0.0.6 -> 192.0.0.7 -> 192.0.0.0.
-  do {
-    if (config_is_ipv4_address_free(htonl(ipv4))) {
-      chosen = htonl(ipv4);
-      break;
-    }
-    ipv4 = prefix | ((ipv4 + 1) & ~mask);
-  } while (ipv4 != first_ipv4);
-
-  return chosen;
-}
-
-/* function: config_generate_local_ipv6_subnet
- * generates the local ipv6 subnet when given the interface ip requires config.ipv6_host_id
- *   interface_ip - in: interface ip, out: local ipv6 host address
- */
-void config_generate_local_ipv6_subnet(struct in6_addr *interface_ip) {
-  int i;
-
-  if (Global_Clatd_Config.use_dynamic_iid) {
-    /* Generate a random interface ID. */
-    gen_random_iid(interface_ip, &Global_Clatd_Config.ipv4_local_subnet,
-                   &Global_Clatd_Config.plat_subnet);
-  } else {
-    /* Use the specified interface ID. */
-    for (i = 2; i < 4; i++) {
-      interface_ip->s6_addr32[i] = Global_Clatd_Config.ipv6_host_id.s6_addr32[i];
-    }
-  }
-}
-
 /* function: read_config
  * reads the config file and parses it into the global variable Global_Clatd_Config. returns 0 on
  * failure, 1 on success
  *   file             - filename to parse
  *   uplink_interface - interface to use to reach the internet and supplier of address space
- *   plat_prefix      - (optional) plat prefix to use, otherwise follow config file
- *   net_id           - (optional) netId to use, NETID_UNSET indicates use of default network
  */
-int read_config(const char *file, const char *uplink_interface, const char *plat_prefix,
-                unsigned net_id) {
+int read_config(const char *file, const char *uplink_interface) {
   cnode *root   = config_node("", "");
-  void *tmp_ptr = NULL;
   unsigned flags;
 
   if (!root) {
@@ -325,27 +190,6 @@ int read_config(const char *file, const char *uplink_interface, const char *plat
   if (!config_item_int16_t(root, "ipv4_local_prefixlen", DEFAULT_IPV4_LOCAL_PREFIXLEN,
                            &Global_Clatd_Config.ipv4_local_prefixlen))
     goto failed;
-
-  if (plat_prefix) {  // plat subnet is coming from the command line
-    if (inet_pton(AF_INET6, plat_prefix, &Global_Clatd_Config.plat_subnet) <= 0) {
-      logmsg(ANDROID_LOG_FATAL, "invalid IPv6 address specified for plat prefix: %s", plat_prefix);
-      goto failed;
-    }
-  } else {
-    tmp_ptr = (void *)config_item_str(root, "plat_from_dns64", "yes");
-    if (!tmp_ptr || strcmp(tmp_ptr, "no") == 0) {
-      free(tmp_ptr);
-
-      if (!config_item_ip6(root, "plat_subnet", NULL, &Global_Clatd_Config.plat_subnet)) {
-        logmsg(ANDROID_LOG_FATAL, "plat_from_dns64 disabled, but no plat_subnet specified");
-        goto failed;
-      }
-    } else {
-      free(tmp_ptr);
-
-      dns64_detection(net_id);
-    }
-  }
 
   if (!config_item_ip6(root, "ipv6_host_id", "::", &Global_Clatd_Config.ipv6_host_id)) goto failed;
 
