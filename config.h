@@ -21,22 +21,31 @@
 #include <linux/if.h>
 #include <netinet/in.h>
 
-#define DEFAULT_IPV4_LOCAL_SUBNET "192.0.0.4"
-#define DEFAULT_IPV4_LOCAL_PREFIXLEN "29"
+#include "ring.h"
+
+struct tun_data {
+  char device4[IFNAMSIZ];
+  int read_fd6, write_fd6, fd4;
+  struct packet_ring ring;
+};
 
 struct clat_config {
   struct in6_addr ipv6_local_subnet;
-  struct in6_addr ipv6_host_id;
   struct in_addr ipv4_local_subnet;
-  int16_t ipv4_local_prefixlen;
   struct in6_addr plat_subnet;
-  char *default_pdp_interface;
-  int use_dynamic_iid;
+  const char *native_ipv6_interface;
 };
 
 extern struct clat_config Global_Clatd_Config;
 
-int read_config(const char *file, const char *uplink_interface);
-int ipv6_prefix_equal(struct in6_addr *a1, struct in6_addr *a2);
+/* function: ipv6_prefix_equal
+ * compares the /64 prefixes of two ipv6 addresses.
+ *   a1 - first address
+ *   a2 - second address
+ *   returns: 0 if the subnets are different, 1 if they are the same.
+ */
+static inline int ipv6_prefix_equal(struct in6_addr *a1, struct in6_addr *a2) {
+  return !memcmp(a1, a2, 8);
+}
 
 #endif /* __CONFIG_H__ */
